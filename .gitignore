@@ -3,3 +3,6 @@
 
 # Jetbrains
 .idea/
+
+param/
+symbolic_tensor_graph/

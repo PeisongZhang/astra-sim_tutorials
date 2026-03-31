@@ -21,3 +21,4 @@ demo2/*.log
 demo3/chakra_traces/
 demo3/etplus_traces/
 demo3/*.log
+chakra-demo/demo3/generated*/
