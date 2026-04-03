@@ -12,10 +12,10 @@ STG=${SCRIPT_DIR}/../../symbolic_tensor_graph
 cd ${STG}
 python3 main.py --output_dir ${SCRIPT_DIR}/toy_model/ \
                --output_name toymodel.%d.et \
-               --dp 4 --tp 4 --pp 4 \
-               --seq 2048 --batch 256 \
-               --dvocal 65536 --dmodel 1024 --dff 4096 \
-               --head 32 --kvhead 8 --num_stacks 4 \
+               --dp 8 --tp 1 --pp 8 \
+               --seq 4096 --batch 1024 \
+               --dvocal 152064 --dmodel 5120 --dff 27648 \
+               --head 40 --kvhead 8 --num_stacks 8 \
                --micro_batch 4 \
                --model_type llama \
                --weight_sharded 0
