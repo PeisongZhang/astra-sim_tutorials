@@ -1,9 +1,19 @@
-# `llama3_8b.sh` 生成 DP workload 与 LocalSGD 的分析
+# `llama3_8b.sh` 生成 DP workload 与 LocalSGD 的分析 / 实现
 
 ## 结论
 
-`llama3_8b.sh` 目前只能生成**同步 DP**（梯度按当前图规则进行 `ALL_REDUCE`）的 workload，不能直接通过命令行参数切换到 LocalSGD。  
-要生成 LocalSGD DP workload，需要额外加入“**每 K 个 local step 才做一次全局同步**”的逻辑（推荐 ET 后处理，或在 STG 中增加原生参数）。
+现在已经可以直接生成 **LocalSGD DP** workload。  
+新增两个入口参数：
+
+- `--num_iterations N`：在同一份 trace 里生成 `N` 个连续 iteration
+- `--dp_local_sgd_interval K`：只在满足 `(iteration + 1) % K == 0` 的 iteration 上保留 DP `ALL_REDUCE`
+
+默认值仍是：
+
+- `--num_iterations 1`
+- `--dp_local_sgd_interval 1`
+
+因此默认行为依然是**同步 DP**；只有把 `dp_local_sgd_interval` 设成大于 `1` 时，才会变成 LocalSGD 风格的“多次本地 iteration 才做一次 DP 同步”。
 
 ---
 
@@ -13,10 +23,11 @@
 
 - `python3 main.py`
 - `--dp 4 --tp 1 --pp 4`
-- `--seq 8192 --batch 128 --micro_batch 2`
+- `--seq 8192 --batch 128 --micro_batch 8`
 - `--model_type llama --weight_sharded 0`
 
-这会在 `llama/` 下生成每个 rank 的 Chakra ET（如 `llama.0.et`）和通信组文件 `llama.json`。
+默认情况下，这会在 `llama/` 下生成每个 rank 的 Chakra ET（如 `llama.0.et`）和通信组文件 `llama.json`；  
+若 `NUM_ITERATIONS > 1` 或 `DP_LOCAL_SGD_INTERVAL > 1`，脚本默认改为输出到 `llama_local_sgd/`。
 
 在 STG 主流程（`symbolic_tensor_graph/main.py`）中，执行顺序是：
 
@@ -28,14 +39,15 @@
 
 ---
 
-## 2) 为什么默认是同步 DP（不是 LocalSGD）
+## 2) 为什么默认仍然是同步 DP（不是 LocalSGD）
 
-1. `main.py` 的参数列表里没有 `local_sgd` / `sync_interval` 一类参数（只有 `dp/tp/pp/sp/...`）。  
-2. `convert_chakra.py` 会根据张量并行语义自动插入通信节点。  
-3. `coll_comm_matcher.py` 的规则里，`PARTIALSUM -> DUPLICATED` 会映射到 `ALL_REDUCE`，这正是同步 DP 梯度聚合语义。  
-4. 抽样读取 `llama/llama.0.et` 后可见 collective 节点均为 `ALL_REDUCE`，并且按 `mb0..mb63` 重复出现（和 `batch=128, micro_batch=2` 对应）。
+1. `main.py` 虽然现在有了 `--num_iterations` 和 `--dp_local_sgd_interval`，但默认值分别是 `1` 和 `1`。  
+2. 在默认值下，`convert_chakra.py` 仍会按张量并行语义插入 DP `ALL_REDUCE`。  
+3. `coll_comm_matcher.py` 的规则里，`PARTIALSUM -> DUPLICATED` 仍然会映射到 `ALL_REDUCE`；LocalSGD 只是对**非同步 iteration** 做后处理裁剪。  
+4. 因此不显式打开 LocalSGD 参数时，trace 仍然表示同步 DP。
 
-因此：当前链路会周期性地在图中保留 DP all-reduce，同步语义是“内生的”，不是运行时可切换的 LocalSGD。
+因此：默认链路仍然会周期性地在图中保留 DP all-reduce；  
+只有显式打开新参数时，才会在生成阶段切换成 LocalSGD workload。
 
 ### 补充：这里的 `micro_batch` 语义与常见 PP 训练定义不一致
 
@@ -63,52 +75,60 @@
 
 而**没有除以 `dp`**。这与标准 PP micro-batch 计数方式不同。
 
-进一步地，梯度通信插入逻辑会把 `PARTIALSUM -> DUPLICATED` 映射为 `ALL_REDUCE`，而 `convert_chakra.py` 会为每个匹配到的 tensor 生成 `COMM_COLL_NODE`。因此 ET 中看到的 `mb0..mb63` 上的 `_sharded_grad@..._X1COMM`，表示的是：
+进一步地，修复后的梯度通信插入逻辑会先把所有 `mb*` 的本地梯度合并，再把 `PARTIALSUM -> DUPLICATED` 的 step 级转换映射成 `ALL_REDUCE`。因此 ET 中看到的 collective，更准确地表示的是：
 
-- 每个被复制出的 `mb*` 局部训练块，都会触发一次 DP `ALL_REDUCE`；
-- 而不是“多个 PP micro-batches 先做梯度累积，在 step 边界统一做一次 DP 同步”。
+- 一个 iteration / step 末尾的 DP `ALL_REDUCE`；
+- 而不是“每个 `mb*` 都触发一次 DP 同步”。
 
 所以，从建模语义上更准确的说法是：
 
 - 这里的 `mb*` 更接近 **被 STG 显式复制出来的 local training chunk / local step**；
 - 不是标准 1F1B / GPipe 文献语境下、服务于 PP 调度和梯度累积的那种 micro-batch。
 
-这也是为什么当前 workload 不适合直接拿来表示 LocalSGD：它默认假设**每个 `mb*` 结束就进行一次同步 DP 梯度聚合**。
+这也是为什么**默认 workload** 不适合直接拿来表示 LocalSGD：它默认假设**每个 iteration 结束都进行一次同步 DP 梯度聚合**。
 
 ---
 
-## 3) 怎么生成 LocalSGD DP workload（可行方案）
+## 3) 现在怎么生成 LocalSGD DP workload
 
-### 方案 A（推荐，侵入最小）：先生成同步 DP，再做 ET 后处理
+### 直接用 `main.py`
 
-流程：
+```bash
+python3 main.py \
+  --output_dir generated_local_sgd/ \
+  --output_name workload.%d.et \
+  --dp 4 --tp 1 --pp 4 \
+  --batch 128 --micro_batch 8 \
+  --num_iterations 4 \
+  --dp_local_sgd_interval 2
+```
 
-1. 先运行原 `llama3_8b.sh`，得到 baseline ET。  
-2. 写一个后处理脚本（例如 `local_sgd_postprocess.py`）读取 `llama.%d.et`：  
-   - 识别 DP 的 `COMM_COLL_NODE + ALL_REDUCE`；  
-   - 设 LocalSGD 周期 `K`；  
-   - 若 `(local_step + 1) % K != 0`，将该 all-reduce 改为“本地步不全局同步”（常见做法：改到 singleton group）；  
-   - 仅在第 `K` 步保留原始 DP all-reduce。  
-3. 输出新文件到 `llama_local_sgd/`，避免覆盖原 traces。
+上面的语义是：
 
-> 对本例（`dp=4,tp=1,pp=4`）而言，`llama.json` 中 size>1 的组是 DP 组，single-rank 组可用于“本地步 no-op 通信组”。
+- trace 中包含 4 个连续 iteration
+- 第 2、4 个 iteration 保留 DP `ALL_REDUCE`
+- 第 1、3 个 iteration 只执行本地更新，不做 DP 同步
 
-### 方案 B（长期更干净）：在 STG 增加原生 LocalSGD 参数
+### 直接用 `llama3_8b.sh`
 
-建议改造点：
+```bash
+NUM_ITERATIONS=4 DP_LOCAL_SGD_INTERVAL=2 ./llama3_8b.sh
+```
 
-1. 在 `main.py` 新增参数：`--dp_local_sgd_interval`（默认 `1`，保持现有行为）。  
-2. 将该参数传入 `ConvertChakra/BundledConvertChakra`。  
-3. 在 `convert_chakra.py::_insert_comm_x1/_insert_comm_x2` 中，仅对 `parallel_dim == dp` 的 `ALL_REDUCE` 应用周期逻辑：  
-   - 非同步步：不插入 DP collective（或改到 singleton group）；  
-   - 同步步：保留现有 all-reduce 插入逻辑。  
+脚本会自动：
 
-这样可直接从生成器产出 LocalSGD trace，不依赖额外后处理。
+- 把新参数透传给 `main.py`
+- 在开启 LocalSGD 时默认输出到 `llama_local_sgd/`
+- 保留默认同步 DP 的原有 `llama/` 输出路径
 
----
+## 4) 当前实现方式
 
-## 4) 对 `llama3_8b.sh` 的落地建议
+当前实现选择的是**BundledHybridGraph 后处理**：
 
-如果目标是“尽快得到 LocalSGD workload”，优先走**方案 A（ET 后处理）**：  
-保留当前脚本生成 baseline，再用 `LOCAL_SGD_K` 控制后处理同步周期，生成 `llama_local_sgd/` 版本 traces。  
-若后续会反复做策略扫描，再考虑落地方案 B，把 LocalSGD 变成 `main.py` 原生参数。
+1. 先按现有 STG 流程生成“单个 step / iteration”的 Chakra 图
+2. 将该 step 复制成多个 iteration
+3. 在非同步 iteration 上删除 `parallel_dim == dp` 的 `ALL_REDUCE`
+4. 重写 `data_deps`，让权重更新直接依赖本地梯度路径
+5. 插入零开销 barrier 节点，把各 iteration 串行化，保证 Astra-Sim 按顺序执行
+
+这样不会改变现有默认同步 DP 行为，也不需要改 Astra-Sim 运行时去循环重复单个 ET。
