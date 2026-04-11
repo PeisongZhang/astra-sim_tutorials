@@ -34,5 +34,6 @@ python3 main.py --output_dir "${OUTPUT_DIR}" \
                --dp_local_sgd_interval "${DP_LOCAL_SGD_INTERVAL}" \
                --model_type llama \
                --mixed_precision true \
+               --flash_attention true \
                --weight_sharded 0
 )
