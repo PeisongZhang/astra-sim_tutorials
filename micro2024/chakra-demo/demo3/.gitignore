@@ -2,5 +2,6 @@ llama/*
 generated/*
 toy_model/*
 llama_*/*
+llama8b_*/*
 llama_backup/*
 

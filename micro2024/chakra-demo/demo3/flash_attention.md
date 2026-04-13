@@ -123,25 +123,17 @@ sharding_spreadsheets/module3/
 
 ## 4. 使用方法
 
-### 4.1 启用 FlashAttention
+### 4.1 选择 Attention kernel
 
-在 shell 脚本中添加 `--flash_attention true` 参数即可：
+`llama3_8b.sh` 现在统一使用一个环境变量 `ATTENTION_BACKEND` 选择注意力实现，不再需要单独的 `FLASH_ATTENTION` 开关：
 
 ```bash
-python3 main.py --output_dir "${OUTPUT_DIR}" \
-                --output_name llama.%d.et \
-                --dp 4 --tp 1 --pp 4 \
-                --seq 8192 --batch 128 \
-                --dvocal 128256 --dmodel 4096 --dff 14336 \
-                --head 32 --kvhead 8 --num_stacks 32 \
-                --micro_batch 8 \
-                --num_iterations 8 \
-                --dp_local_sgd_interval 8 \
-                --model_type llama \
-                --mixed_precision true \
-                --weight_sharded 0 \
-                --flash_attention true    # ← 新增
+ATTENTION_BACKEND=standard ./llama3_8b.sh
+ATTENTION_BACKEND=fused ./llama3_8b.sh
+ATTENTION_BACKEND=flash ./llama3_8b.sh
 ```
+
+如果直接调用 `main.py`，仍然推荐使用 `--attention_backend {standard,fused,flash}`；`--flash_attention true` 仅保留为兼容旧接口的写法。
 
 ### 4.2 对仿真结果的影响
 
