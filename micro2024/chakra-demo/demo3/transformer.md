@@ -14,8 +14,8 @@
 
 - $B$：batch size
 - $S$：sequence length
-- $d$：hidden size，也常写作 $d_model$
-- $h$：attention head 数
+- $d$：hidden size，也常写作 $ d_{model} $
+- $h$：attention head数
 - $d_h = d / h$：每个 head 的维度
 - $d_{ff}$：FFN 中间层维度
 - $V$：词表大小
@@ -494,7 +494,7 @@ $$
 
 可以得到几个直觉：
 
-1. $QKV/输出投影$ 主要看 $d^2$
+1. $QKV/ output projection$ 主要看 $d^2$
 2. $attention score / AV$ 主要看 $S^2$
 3. $FFN$ 主要看 $d \cdot d_{ff}$
 
@@ -581,9 +581,9 @@ $$
 
 ## 9. 和训练优化文档的关系
 
-如果把这篇文档和 $[transformer_training_optimization_survey.md](/home/ps/sow/part2/astra-sim_tutorials/micro2024/chakra-demo/demo3/transformer_training_optimization_survey.md)$ 对起来看，可以这样理解：
+如果把这篇文档和 [transformer_training_optimization_survey](transformer_training_optimization_survey.md) 对起来看，可以这样理解：
 
-1. $FlashAttention$ 优化的是上面 $Attention$ 里的 $QK^T -> softmax -> PV$ 这部分实现
+1. $FlashAttention$ 优化的是上面 $Attention$ 里的 $QK^T$ -> $softmax$ -> $PV$ 这部分实现
 2. $ZeRO/FSDP$ 优化的是参数、梯度、优化器状态的存储和通信
 3. $Checkpointing$ 优化的是 block 内各层 activation 的保存方式
 4. $TP/PP/DP/SP$ 优化的是这些层如何分布到多卡执行
@@ -600,7 +600,7 @@ $$
 如果只保留最核心的结论，可以记这几句：
 
 1. 一个 Transformer block 本质上就是：$Norm -> Attention -> Residual -> Norm -> FFN -> Residual$
-2. Attention 的主计算由 $QKV 投影 + QK^T + softmax + PV + 输出投影$ 组成
+2. Attention 的主计算由 $QKV projection + QK^T + softmax + PV + output projection$ 组成
 3. Attention 的复杂度不是只有 $O(S^2)$，更准确是 $O(BSd^2) + O(BS^2d)$
 4. FFN 的复杂度大约是 $O(BSdd_{ff})$，很多时候它和 attention 一样重，甚至更重
 5. 长序列训练难，主要难在 attention 的 $S^2$ 激活和计算
